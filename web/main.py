@@ -6,207 +6,128 @@ import numpy as np
 import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
-#from sklearn.preprocessing import StandardScaler
-from scipy.interpolate import BSpline
-
+import json
+from folium.plugins import HeatMapWithTime
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'data'
 app.config['ALLOWED_EXTENSIONS'] = {'csv', 'xls', 'xlsx'}
-app.secret_key = 'your-secret-key-here'  # Необходимо для flash-сообщений
+app.secret_key = '123'
 
+# Координаты городов
+city_coords = {
+             'New York': [np.float64(40.7128), np.float64(-74.006)],
+             'Los Angeles': [np.float64(34.0522), np.float64(-118.2437)],
+             'Chicago': [np.float64(41.8781), np.float64(-87.6298)],
+             'Houston': [np.float64(29.7604), np.float64(-95.3698)],
+             'Phoenix': [np.float64(33.4484), np.float64(-112.074)],
+             'Philadelphia': [np.float64(39.9526), np.float64(-75.1652)],
+             'San Antonio': [np.float64(29.4241), np.float64(-98.4936)],
+             'San Diego': [np.float64(32.7157), np.float64(-117.1611)],
+             'Dallas': [np.float64(32.7767), np.float64(-96.797)],
+             'San Jose': [np.float64(37.3382), np.float64(-121.8863)],
+             'Austin': [np.float64(30.2672), np.float64(-97.7431)],
+             'Jacksonville': [np.float64(30.3322), np.float64(-81.6557)],
+             'Fort Worth': [np.float64(32.7555), np.float64(-97.3308)],
+             'Columbus': [np.float64(39.9612), np.float64(-82.9988)],
+             'Charlotte': [np.float64(35.2271), np.float64(-80.8431)],
+             'San Francisco': [np.float64(37.7749), np.float64(-122.4194)],
+             'Indianapolis': [np.float64(39.7684), np.float64(-86.1581)],
+             'Seattle': [np.float64(47.6062), np.float64(-122.3321)],
+             'Denver': [np.float64(39.7392), np.float64(-104.9903)],
+             'Washington': [np.float64(38.9072), np.float64(-77.0369)]
+}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
-def data_preparation(df):
-
-    df = df[['date', 'tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool',
-       'sunrise', 'sunset', 'snowfall', 'preciptotal', 'stnpressure',
-       'sealevel', 'resultspeed', 'resultdir', 'avgspeed', 'codesum']]
-
-    df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset', 'resultdir']] = \
-        df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset', \
-                   'resultdir']].astype('int')
-
-    df = df.replace('  T', '0.001')  # Замена Trace на маленькое 0.001
-    df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']] = \
-        df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']].astype('float')
-
-    codesum_cat = ['+FC', 'FC', 'TS', 'GR', 'RA', 'DZ', 'SN', 'SG', 'GS', 'PL', 'IC', 'FG+', 'FG', 'BR', 'UP', \
-                   'HZ', 'FU', 'VA', 'DU', 'DS', 'PO', 'SA', 'SS', 'PY', 'SQ', 'DR', 'SH', 'FZ', 'MI', 'PR', \
-                   'BC', 'BL', 'VC']  # Вариации кодов
-
-    for code in codesum_cat:
-        df[code] = [False for _ in range(df.shape[0])]  # One-Hot-Encoding
-
-    # Заполнение Ohe
-    for i in range(df.shape[0]):
-        codes = df.loc[i, 'codesum'].split()
-        for code in codes:
-            if len(code) > 3:
-                df.loc[i, code[:2]] = True
-                df.loc[i, code[2:]] = True
-            else:
-                df.loc[i, code] = True
-
-    df = df.drop(['codesum'], axis=1)
-
+def process_weather_file(filepath: str) -> pd.DataFrame:
     try:
-        date = pd.to_datetime(df['date'])
-    except Exception as e:
-        print(f"Error loading dates: {e}")
+        df = pd.read_csv(filepath)
+        if df.isnull().any(axis=1).any() or df.replace('M', np.nan).isnull().any(axis=1).any():
+            raise ValueError("Обнаружены строки с пропущенными значениями в weather.csv")
+        df = df[['date', 'tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat',
+               'cool', 'sunrise', 'sunset', 'codesum', 'snowfall', 'preciptotal',
+               'stnpressure', 'sealevel', 'resultspeed', 'resultdir', 'avgspeed']]
+        df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset',
+                      'resultdir']] = \
+            df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset', \
+                          'resultdir']].astype('int')
 
-    #scaler = StandardScaler()
-    #df = scaler.fit_transform(df.drop('date', axis=1))
-    df = df.drop('date', axis=1)
-    return df, date
+        df = df.replace('  T', '0.001')  # Замена Trace на маленькое 0.001
+        df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']] = \
+            df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']].astype(
+                'float')
 
+        df['date'] = pd.to_datetime(df['date'])
 
-def load_heatmap_data():
-    """Загружает данные из файла, возвращает None если формат неправильный"""
-    try:
-        df = pd.read_csv('data/test.csv ')
+        codesum_cat = ['+FC', 'FC', 'TS', 'GR', 'RA', 'DZ', 'SN', 'SG', 'GS', 'PL', 'IC', 'FG+', 'FG', 'BR', 'UP', \
+                       'HZ', 'FU', 'VA', 'DU', 'DS', 'PO', 'SA', 'SS', 'PY', 'SQ', 'DR', 'SH', 'FZ', 'MI', 'PR', \
+                       'BC', 'BL', 'VC']
 
-        # Проверяем обязательные колонки
-        required_columns = ['date', 'tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool',
-       'sunrise', 'sunset', 'snowfall', 'preciptotal', 'stnpressure',
-       'sealevel', 'resultspeed', 'resultdir', 'avgspeed', 'codesum']
-        if not any(col in df.columns for col in required_columns):
-            return None
+        for code in codesum_cat:
+            df[code] = [False for _ in range(df.shape[0])]  # One-Hot-Encoding
 
-        df, date = data_preparation(df)
-        print(df)
-        preds = get_intencity(df)
-        print(preds)
-        return df, date
+        # Заполнение Ohe
+        for i in range(df.shape[0]):
+            codes = df.loc[i, 'codesum'].split()
+            for code in codes:
+                if len(code) > 3:
+                    df.loc[i, code[:2]] = True
+                    df.loc[i, code[2:]] = True
+                else:
+                    df.loc[i, code] = True
+
+        df = df.drop('codesum', axis=1)
+        return df
 
     except Exception as e:
-        print(f"Error loading data: {e}")
+        print(f"[Ошибка] Обработка weather.csv: {e}")
         return None
 
-def get_coefs():
-    try:
-        return pd.read_csv('data/weather_coefs.csv')
-    except Exception as e:
-        print(f"Error get coords: {e}")
+def compute_intensity(weather_df: pd.DataFrame, coefs_df: pd.DataFrame, city_coords: dict, selected_cities=None, selected_products=None) -> pd.DataFrame:
+    result_rows = []
 
-def get_intencity(df):
-    coefs = get_coefs()
+    for _, row in weather_df.iterrows():
+        date = row['date'].strftime('%Y-%m-%d')
+        features = row.drop('date').values
 
-    def build_spline_matrix(X, n_splines=20, spline_order=3):
-        # Узлы (knots) равномерно распределены по квантилям
-        knots = np.linspace(X.min(), X.max(), n_splines - spline_order + 1)
+        for city, coords in city_coords.items():
+            if selected_cities and city not in selected_cities:
+                continue
 
-        # Добавляем граничные узлы (extended knots)
-        extended_knots = np.r_[
-            [X.min()] * spline_order,
-            knots,
-            [X.max()] * spline_order
-        ]
+            products = {}
+            total_intensity = 0
 
-        # Создаем базисные функции B-сплайнов
-        basis = np.zeros((len(X), n_splines))
-        for i in range(n_splines):
-            coefs = np.zeros(n_splines)
-            coefs[i] = 1
-            spline = BSpline(extended_knots, coefs, spline_order)
-            basis[:, i] = spline(X)
+            for product_id in coefs_df.index:
+                if selected_products and str(product_id) not in selected_products:
+                    continue
 
-        return basis
+                # ИЗМЕНИТЬ НА КОЭФЫ
+                coefs = np.random.rand(len(features),1)
+                result = np.dot(features, coefs)[0]
+                if result > 0:
+                    products[int(product_id)] = result
+                    total_intensity += result
 
-
-    try:
-        pred = []
-        for i in range(df[:,1].shape[0]):
-            spline_part = build_spline_matrix(df[:, 1][i])
-            intercept = np.zeros((len(df[:, 1][i]), 1))
-            model_matrix = np.hstack([intercept, spline_part])
-            sum = 0
-            for city in ['Dallas']:
-                for j in range(1, 112):
-                    sum += model_matrix @ coefs.loc[1, city].values
-            pred.append(sum)
-        return pred
-
-
-    except Exception as e:
-        print(f"Error: {e}")
-
-def create_timestamped_map(df, date):
-    """Создает карту с анимированным тепловым слоем по датам"""
-    if df is None or df.empty:
-        # Для показа прототипа
-        features = []
-        prototype = pd.read_csv('data/prototype.csv')
-        for i in range(prototype.shape[0]):
-            features.append({
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'Point',
-                    'coordinates': [prototype.loc[i, 'longitude'], prototype.loc[i, 'latitude']]
-                },
-                'properties': {
-                    #'time': date,
-                    'intensity': prototype.loc[i, 'intencity'],
-                    'style': {'color': get_color(prototype.loc[i, 'intencity'])}
-                }
+            result_rows.append({
+                'date': date,
+                'latitude': coords[0],
+                'longitude': coords[1],
+                'city': city,
+                'intensity': total_intensity,
+                'products': json.dumps(products)
             })
 
+    result_rows = pd.DataFrame(result_rows)
 
-        m = folium.Map(location=[30, 0], zoom_start=2, tiles='OpenStreetMap')
-        TimestampedGeoJson(
-            {'type': 'FeatureCollection', 'features': features},
-            period='P1M',
-            add_last_point=True,
-            auto_play=False,
-            loop=False,
-            max_speed=1,
-            loop_button=False,
-            date_options='YYYY-MM-DD',
-            time_slider_drag_update=True
-        ).add_to(m)
-        return m._repr_html_()
+    # intensity scale
+    result_rows['intensity'] = (result_rows['intensity'] - result_rows['intensity'].min(axis=0)) / (result_rows['intensity'].max(axis=0) - result_rows['intensity'].min(axis=0))
+    result_rows.loc[2, 'intensity'] = 0.6
 
-    m = folium.Map(location=[30, 0], zoom_start=2, tiles='OpenStreetMap')
-
-    # Преобразуем даты в строки для JSON
-    date = date.dt.strftime('%Y-%m-%d')
-
-    # Создаем данные для TimestampedGeoJson
-    features = []
-    for i in range(date.shape[0]):
-        features.append({
-            'type': 'Feature',
-            'geometry': {
-                'type': 'Point',
-                'coordinates': [row['longitude'], row['latitude']]
-            },
-            'properties': {
-                'time': date,
-                'intensity': 0.5,
-                'style': {'color': get_color(row['intensity'])}
-            }
-        })
-
-    # Добавляем анимированный слой
-    TimestampedGeoJson(
-        {'type': 'FeatureCollection', 'features': features},
-        period='P1M',
-        add_last_point=True,
-        auto_play=False,
-        loop=False,
-        max_speed=1,
-        loop_button=True,
-        date_options='YYYY-MM-DD',
-        time_slider_drag_update=True
-    ).add_to(m)
-
-    return m._repr_html_()
-
+    return result_rows
 
 def get_color(intensity):
-    """Возвращает цвет в зависимости от интенсивности"""
     if intensity > 0.8:
         return 'red'
     elif intensity > 0.5:
@@ -214,48 +135,99 @@ def get_color(intensity):
     else:
         return 'yellow'
 
+def create_timestamped_map(df):
+    if df is None or df.empty:
+        return folium.Map(location=[30, 0], zoom_start=2)._repr_html_()
+
+    df['date'] = pd.to_datetime(df['date'])
+    df['date_str'] = df['date'].dt.strftime('%Y-%m-%d')
+
+    grouped = df.groupby('date_str')
+    time_index = []
+    heat_data = []
+
+    m = folium.Map(location=[55, 37], zoom_start=4, tiles='CartoDB dark_matter')
+
+    for date, group in grouped:
+        time_index.append(date)
+        day_heat = []
+
+        for _, row in group.iterrows():
+            day_heat.append([row['latitude'], row['longitude'], row['intensity']])
+
+            popup_text = f"<b>{row['city']}</b><br>"
+            product_dict = json.loads(row['products'])
+            popup_text += '<br>'.join([f"{k}: {int(v)}" for k, v in product_dict.items() if v > 0])
+
+            folium.CircleMarker(
+                location=(row['latitude'], row['longitude']),
+                radius=1,
+                color='white',
+                fill=True,
+                fill_color='white',
+                fill_opacity=0.7,
+                popup=folium.Popup(popup_text, max_width=250)
+            ).add_to(m)
+
+        heat_data.append(day_heat)
+
+    HeatMapWithTime(
+        heat_data,
+        index=time_index,
+        auto_play=False,
+        max_opacity=0.8,
+        radius=20,
+        use_local_extrema=True
+    ).add_to(m)
+
+    return m._repr_html_()
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    df = None
-    date = None
+    heatmap_df = None
     min_date = ""
     max_date = ""
+    selected_cities = request.form.getlist('cities')
+    selected_products = request.form.getlist('products')
 
     if request.method == 'POST':
         if 'file' in request.files:
             file = request.files['file']
             if file and file.filename != '' and allowed_file(file.filename):
-                filename = secure_filename('heatmap_data.csv')
+                filename = secure_filename('weather.csv')
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
 
-                # Проверяем загруженный файл
-                df, date = load_heatmap_data()
-                if df is None:
-                    flash(
-                        'Ошибка: Файл',
-                        'error')
-                    os.remove(filepath)  # Удаляем невалидный файл
+                weather_df = process_weather_file(filepath)
+                if weather_df is None:
+                    flash('Ошибка: Невозможно обработать weather.csv', 'error')
+                    os.remove(filepath)
                 else:
-                    flash('Файл успешно загружен', 'success')
+                    try:
+                        coefs_df = pd.read_csv('data/coefficients.csv', index_col=0)
+                        heatmap_df = compute_intensity(weather_df, coefs_df, city_coords, selected_cities, selected_products)
+                        flash('Файл успешно загружен и обработан', 'success')
+                    except Exception as e:
+                        flash(f'Ошибка при вычислении карты: {e}', 'error')
+
             elif file.filename != '':
                 flash('Ошибка: Разрешены только файлы CSV или Excel', 'error')
 
-    # Получаем диапазон дат если данные есть
-    if date is not None and not date.empty:
-        min_date = date.min().strftime('%Y-%m-%d')
-        max_date = date.max().strftime('%Y-%m-%d')
+    if heatmap_df is not None and not heatmap_df.empty:
+        dates = pd.to_datetime(heatmap_df['date'])
+        min_date = dates.min().strftime('%Y-%m-%d')
+        max_date = dates.max().strftime('%Y-%m-%d')
 
-    map_html = create_timestamped_map(df, date)
+    map_html = create_timestamped_map(heatmap_df)
 
     return render_template(
         'index.html',
         map_html=map_html,
         min_date=min_date,
-        max_date=max_date
+        max_date=max_date,
+        cities=city_coords.keys(),
+        products=[str(i) for i in range(1, 112)]
     )
-
 
 if __name__ == '__main__':
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
