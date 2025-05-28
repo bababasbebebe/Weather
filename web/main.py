@@ -7,6 +7,8 @@ import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import json
+import dill
+import pygam
 from folium.plugins import HeatMapWithTime
 
 app = Flask(__name__)
@@ -34,9 +36,11 @@ city_coords = {
              'San Francisco': [np.float64(37.7749), np.float64(-122.4194)],
              'Indianapolis': [np.float64(39.7684), np.float64(-86.1581)],
              'Seattle': [np.float64(47.6062), np.float64(-122.3321)],
-             'Denver': [np.float64(39.7392), np.float64(-104.9903)],
-             'Washington': [np.float64(38.9072), np.float64(-77.0369)]
+             'Denver': [np.float64(39.7392), np.float64(-104.9903)]
 }
+
+with open("data/gam_data.pkl", "rb") as f:
+    saved_data = dill.load(f)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
@@ -45,22 +49,23 @@ def process_weather_file(filepath: str) -> pd.DataFrame:
     try:
         df = pd.read_csv(filepath)
         if df.isnull().any(axis=1).any() or df.replace('M', np.nan).isnull().any(axis=1).any():
-            raise ValueError("Обнаружены строки с пропущенными значениями в weather.csv")
-        df = df[['date', 'tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat',
-               'cool', 'sunrise', 'sunset', 'codesum', 'snowfall', 'preciptotal',
-               'stnpressure', 'sealevel', 'resultspeed', 'resultdir', 'avgspeed']]
-        df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset',
+            raise ValueError("Обнаружены строки с пропущенными значениями в csv файле")
+        df = df[['date', 'tmax', 'tmin', 'tavg', 'dewpoint', 'wetbulb', 'heat', 'cool',
+               'sunrise', 'sunset', 'preciptotal', 'stnpressure', 'resultspeed',
+               'resultdir', 'avgspeed']]
+        df[['tmax', 'tmin', 'tavg', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset',
                       'resultdir']] = \
-            df[['tmax', 'tmin', 'tavg', 'depart', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset', \
+            df[['tmax', 'tmin', 'tavg', 'dewpoint', 'wetbulb', 'heat', 'cool', 'sunrise', 'sunset', \
                           'resultdir']].astype('int')
 
         df = df.replace('  T', '0.001')  # Замена Trace на маленькое 0.001
-        df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']] = \
-            df[['snowfall', 'preciptotal', 'stnpressure', 'sealevel', 'resultspeed', 'avgspeed']].astype(
+        df[['preciptotal', 'stnpressure', 'resultspeed', 'avgspeed']] = \
+            df[['preciptotal', 'stnpressure', 'resultspeed', 'avgspeed']].astype(
                 'float')
 
         df['date'] = pd.to_datetime(df['date'])
 
+        '''
         codesum_cat = ['+FC', 'FC', 'TS', 'GR', 'RA', 'DZ', 'SN', 'SG', 'GS', 'PL', 'IC', 'FG+', 'FG', 'BR', 'UP', \
                        'HZ', 'FU', 'VA', 'DU', 'DS', 'PO', 'SA', 'SS', 'PY', 'SQ', 'DR', 'SH', 'FZ', 'MI', 'PR', \
                        'BC', 'BL', 'VC']
@@ -79,13 +84,15 @@ def process_weather_file(filepath: str) -> pd.DataFrame:
                     df.loc[i, code] = True
 
         df = df.drop('codesum', axis=1)
+        '''
+
         return df
 
     except Exception as e:
-        print(f"[Ошибка] Обработка weather.csv: {e}")
+        print(f"[Ошибка] Обработка csv: {e}")
         return None
 
-def compute_intensity(weather_df: pd.DataFrame, coefs_df: pd.DataFrame, city_coords: dict, selected_cities=None, selected_products=None) -> pd.DataFrame:
+def compute_intensity(weather_df: pd.DataFrame, city_coords: dict, gam_file: dict, selected_cities=None, selected_products=None) -> pd.DataFrame:
     result_rows = []
 
     for _, row in weather_df.iterrows():
@@ -99,25 +106,31 @@ def compute_intensity(weather_df: pd.DataFrame, coefs_df: pd.DataFrame, city_coo
             products = {}
             total_intensity = 0
 
-            for product_id in coefs_df.index:
+            for product_id in range(1,112):
                 if selected_products and str(product_id) not in selected_products:
                     continue
 
                 # ИЗМЕНИТЬ НА КОЭФЫ
-                coefs = np.random.rand(len(features),1)
-                result = np.dot(features, coefs)[0]
-                if result > 0:
-                    products[int(product_id)] = result
-                    total_intensity += result
+                try:
+                    coefs = saved_data[city][product_id][0]
+                    terms = saved_data[city][product_id][1]
+                except Exception as e:
+                    flash(f'Ошибка при вычислении коэффициентов: {e}', 'error')
+                if not isinstance(coefs, int) and not isinstance(terms, int):
+                    result = terms.build_columns(np.array(features).astype('float').reshape(1, -1)) @ coefs
 
-            result_rows.append({
-                'date': date,
-                'latitude': coords[0],
-                'longitude': coords[1],
-                'city': city,
-                'intensity': total_intensity,
-                'products': json.dumps(products)
-            })
+                    if 0 < result[0] < 50:
+                        result = round(np.exp(result[0]))
+                        products[int(product_id)] = result
+                        total_intensity += result
+                    result_rows.append({
+                        'date': date,
+                        'latitude': coords[0],
+                        'longitude': coords[1],
+                        'city': city,
+                        'intensity': total_intensity,
+                        'products': json.dumps(products)
+                    })
 
     result_rows = pd.DataFrame(result_rows)
 
@@ -132,8 +145,9 @@ def get_color(intensity):
         return 'red'
     elif intensity > 0.5:
         return 'orange'
-    else:
+    elif intensity > 0.2:
         return 'yellow'
+
 
 def create_timestamped_map(df):
     if df is None or df.empty:
@@ -161,11 +175,11 @@ def create_timestamped_map(df):
 
             folium.CircleMarker(
                 location=(row['latitude'], row['longitude']),
-                radius=1,
+                radius=0.5,
                 color='white',
                 fill=True,
                 fill_color='white',
-                fill_opacity=0.7,
+                fill_opacity=0.1,
                 popup=folium.Popup(popup_text, max_width=250)
             ).add_to(m)
 
@@ -204,8 +218,7 @@ def index():
                     os.remove(filepath)
                 else:
                     try:
-                        coefs_df = pd.read_csv('data/coefficients.csv', index_col=0)
-                        heatmap_df = compute_intensity(weather_df, coefs_df, city_coords, selected_cities, selected_products)
+                        heatmap_df = compute_intensity(weather_df, city_coords, saved_data, selected_cities, selected_products)
                         flash('Файл успешно загружен и обработан', 'success')
                     except Exception as e:
                         flash(f'Ошибка при вычислении карты: {e}', 'error')
