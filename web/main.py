@@ -10,6 +10,8 @@ import json
 import dill
 import pygam
 from folium.plugins import HeatMapWithTime
+from sklearn.preprocessing import StandardScaler
+
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'data'
@@ -94,7 +96,7 @@ def process_weather_file(filepath: str) -> pd.DataFrame:
 
 def compute_intensity(weather_df: pd.DataFrame, city_coords: dict, gam_file: dict, selected_cities=None, selected_products=None) -> pd.DataFrame:
     result_rows = []
-
+    scaler = StandardScaler()
     for _, row in weather_df.iterrows():
         date = row['date'].strftime('%Y-%m-%d')
         features = row.drop('date').values
@@ -117,20 +119,23 @@ def compute_intensity(weather_df: pd.DataFrame, city_coords: dict, gam_file: dic
                 except Exception as e:
                     flash(f'Ошибка при вычислении коэффициентов: {e}', 'error')
                 if not isinstance(coefs, int) and not isinstance(terms, int):
-                    result = terms.build_columns(np.array(features).astype('float').reshape(1, -1)) @ coefs
+                    features = scaler.fit_transform(np.array(features).astype('float').reshape(-1, 1))
+                    result = terms.build_columns(features.reshape(1, -1)) @ coefs
 
-                    if 0 < result[0] < 50:
+                    if 0 < result[0] < 5:
+                        print(result)
                         result = round(np.exp(result[0]))
+                        print(result, '\n')
                         products[int(product_id)] = result
                         total_intensity += result
-                    result_rows.append({
-                        'date': date,
-                        'latitude': coords[0],
-                        'longitude': coords[1],
-                        'city': city,
-                        'intensity': total_intensity,
-                        'products': json.dumps(products)
-                    })
+                        result_rows.append({
+                            'date': date,
+                            'latitude': coords[0],
+                            'longitude': coords[1],
+                            'city': city,
+                            'intensity': total_intensity,
+                            'products': json.dumps(products)
+                        })
 
     result_rows = pd.DataFrame(result_rows)
 
@@ -145,8 +150,10 @@ def get_color(intensity):
         return 'red'
     elif intensity > 0.5:
         return 'orange'
-    elif intensity > 0.2:
+    elif intensity > 0.3:
         return 'yellow'
+    else:
+        return 'black'
 
 
 def create_timestamped_map(df):
